@@ -2,6 +2,10 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <unistd.h>
+
+int physmem_fd;
+int devmem_fd;
 
 void hexdump(void *data, int size) {
 	
@@ -19,14 +23,6 @@ void hexdump(void *data, int size) {
 }
 
 void map_physmem(off_t offset) {
-
-	int physmem_fd = open("/dev/physmem", O_RDWR);
-	int devmem_fd = open("/dev/mem", O_RDWR);
-
-	if (devmem_fd == -1 || physmem_fd == -1) {
-		perror("open");
-		exit(-1);
-	}
 
 	void *physmem_addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, physmem_fd, offset);
 	void  *devmem_addr = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, devmem_fd, offset);
@@ -48,6 +44,18 @@ void map_physmem(off_t offset) {
 
 
 int main(int argc, char *argv[]) {
+	physmem_fd = open("/dev/physmem", O_RDWR);
+	devmem_fd = open("/dev/mem", O_RDWR);
+
+	if (devmem_fd == -1) {
+		perror("open /dev/mem");
+		exit(-1);
+	}
+	
+	if (physmem_fd == -1) {
+		perror("open /dev/physmem");
+		exit(-1);
+	}
 
 	printf("Trying at offset 0x00\n\n");
 
@@ -57,5 +65,8 @@ int main(int argc, char *argv[]) {
         
 	map_physmem(0x100000);	
 	
+	close(physmem_fd);
+	close(devmem_fd);
+
 	return 0;
 }
