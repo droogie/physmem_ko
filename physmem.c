@@ -186,7 +186,7 @@ END:
 
 int device_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-    unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
+    unsigned long offset = vma->vm_pgoff;
 
     if (offset >= __pa(high_memory) || (filp->f_flags & O_SYNC))
         vma->vm_flags |= VM_IO;
@@ -246,7 +246,7 @@ void cleanup_module(void)
     printk(KERN_INFO "Unloaded physmem device");
 }
 
-// physical memory allocaiton code provided by Ilja van Sprundel
+// physical memory allocation code provided by Ilja van Sprundel
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("https://github.com/droogie; https://github.com/iljavs;");
 MODULE_DESCRIPTION("An unrestricted /dev/mem implementation that can also be used to allocate physical memory");
