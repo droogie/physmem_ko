@@ -26,7 +26,7 @@ int main()
 	printf("Informing driver to allocate\n");
         ret = ioctl(fd, IOCTL_PA_ALLOC, (size_t*) &size); 
 	printf("ioctl ret: %x\n", ret);
-	printf("addr: 0x%lx\n", (void *) size);
+	printf("addr: %p\n", (void *) size);
 
         printf("Informing driver to free allocation\n");
         ret = ioctl(fd, IOCTL_PA_FREE, (void *) &size);
