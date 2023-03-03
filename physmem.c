@@ -2,8 +2,8 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/cdev.h>
-
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
@@ -11,13 +11,12 @@
 #include <linux/mutex.h>
 #include <linux/ioctl.h>
 
-#define DEVICE_NAME "physmem"
-#define IOCTL_PA_ALLOC _IOWR('p', 0, size_t)
-#define IOCTL_PA_FREE _IOR('p', 1, void *)
-
 static dev_t  dev;
 static struct cdev c_dev;
 static struct class *cl;
+struct device *device = NULL;
+static int  dma_mask_bit = 32;
+struct device *dma_dev;
 
 struct addr_list {
         struct addr_list *next;
@@ -26,6 +25,19 @@ struct addr_list {
         void *k;
         size_t size;
 };
+
+struct dma_info {
+   unsigned int size;
+   void *buffer;
+   uint64_t phys_address;
+};
+
+#define DEVICE_NAME "physmem"
+
+#define IOCTL_PA_ALLOC _IOWR('p', 0, size_t)
+#define IOCTL_PA_FREE _IOR('p', 1, void *)
+#define IOCTL_DMA_ALLOC _IOWR('p', 2, struct dma_info)
+#define IOCTL_DMA_FREE _IOR('p', 3, struct dma_info)
 
 struct addr_list *al;
 static int pa_open_count = 0;
@@ -116,7 +128,9 @@ static long pa_ioctl(struct file *file,
         size_t size = 0;
         void *p, *k;
         int err;
-        int ret = 0;
+        int ret = 0;        
+        struct dma_info _dma;
+
         mutex_lock(&pa_mutex);
 
         switch (ioctl_num) {
@@ -174,9 +188,41 @@ static long pa_ioctl(struct file *file,
                         }
                         break;
 
+
+                case IOCTL_DMA_ALLOC:
+                        printk(KERN_INFO "IOCTL_DMA_ALLOC");
+                        err = copy_from_user(&_dma, (void *)ioctl_param, sizeof(struct dma_info));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+                        printk(KERN_INFO "requested dma.size: %08x\n", _dma.size);
+                        _dma.buffer = dma_alloc_coherent(dma_dev, _dma.size, &_dma.phys_address, GFP_KERNEL);
+                        printk(KERN_INFO "dma_alloc_coherent: va:[%016lx] - pa:[%016lx]",
+                                _dma.buffer, _dma.phys_address);
+                        if (copy_to_user((void *)ioctl_param, &_dma, sizeof(struct dma_info))) {
+                                pr_err("copy_to_user error!!\n");
+                        }
+
+                        break;
+
+                case IOCTL_DMA_FREE:
+                        printk(KERN_INFO "IOCTL_DMA_FREE");
+                        err = copy_from_user(&_dma, (void *)ioctl_param, sizeof(struct dma_info));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+                        dma_free_coherent(dma_dev, _dma.size, _dma.buffer, _dma.phys_address);
+
+                        break;
+
+
                 default:
                         ret = -EINVAL;
                         break;
+
+               
         }
 
 END:
@@ -217,12 +263,16 @@ int init_module(void)
     if ((cl = class_create(THIS_MODULE, DEVICE_NAME)) == NULL)
         goto class_create_fail;
 
-    if (device_create(cl, NULL, dev, NULL, DEVICE_NAME) == NULL)
+    device = device_create(cl, NULL, dev, NULL, DEVICE_NAME);
+    if (!device)
         goto device_create_fail;
 
     cdev_init(&c_dev, &fops);
     if (cdev_add(&c_dev, dev, 1) == -1)
         goto device_add_fail;
+
+    dma_dev = get_device(device);
+    dma_set_mask_and_coherent(dma_dev, DMA_BIT_MASK(dma_mask_bit));    
 
     printk(KERN_INFO "Loaded physmem device");
 	return 0;
