@@ -28,7 +28,8 @@ struct addr_list {
 
 struct dma_info {
    unsigned int size;
-   void *buffer;
+   void *kernel_vaddr;
+   void *user_vaddr;
    uint64_t phys_address;
 };
 
@@ -197,9 +198,9 @@ static long pa_ioctl(struct file *file,
                                 goto END;
                         }
                         printk(KERN_INFO "requested dma.size: %08x\n", _dma.size);
-                        _dma.buffer = dma_alloc_coherent(dma_dev, _dma.size, &_dma.phys_address, GFP_KERNEL);
+                        _dma.kernel_vaddr = dma_alloc_coherent(dma_dev, _dma.size, &_dma.phys_address, GFP_KERNEL);
                         printk(KERN_INFO "dma_alloc_coherent: va:[%016lx] - pa:[%016lx]",
-                                _dma.buffer, _dma.phys_address);
+                                _dma.kernel_vaddr, _dma.phys_address);
                         if (copy_to_user((void *)ioctl_param, &_dma, sizeof(struct dma_info))) {
                                 pr_err("copy_to_user error!!\n");
                         }
@@ -213,7 +214,7 @@ static long pa_ioctl(struct file *file,
                                 ret = -EINVAL;
                                 goto END;
                         }
-                        dma_free_coherent(dma_dev, _dma.size, _dma.buffer, _dma.phys_address);
+                        dma_free_coherent(dma_dev, _dma.size, _dma.kernel_vaddr, _dma.phys_address);
 
                         break;
 
@@ -272,7 +273,9 @@ int init_module(void)
         goto device_add_fail;
 
     dma_dev = get_device(device);
-    dma_set_mask_and_coherent(dma_dev, DMA_BIT_MASK(dma_mask_bit));    
+    dma_set_mask_and_coherent(dma_dev, DMA_BIT_MASK(dma_mask_bit));   
+    dma_dev->dma_mask         = DMA_BIT_MASK(dma_mask_bit);
+    dma_dev->coherent_dma_mask = DMA_BIT_MASK(dma_mask_bit); 
 
     printk(KERN_INFO "Loaded physmem device");
 	return 0;
