@@ -2,16 +2,22 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/cdev.h>
-
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
 #include <linux/ioctl.h>
-
 #include <asm/io.h>
+
+static dev_t  dev;
+static struct cdev c_dev;
+static struct class *cl;
+struct device *device = NULL;
+static int  dma_mask_bit = 64;
+struct device *dma_dev;
 
 struct addr_list {
         struct addr_list *next;
@@ -19,6 +25,13 @@ struct addr_list {
         void *p;
         void *k;
         size_t size;
+};
+
+struct dma_info {
+        unsigned int size;
+        void *kernel_vaddr;
+        void *user_vaddr;
+        uint64_t phys_address;
 };
 
 struct io_req {
@@ -30,17 +43,15 @@ struct io_req {
 #define DEVICE_NAME "physmem"
 
 #define IOCTL_PA_ALLOC _IOWR('p', 0, size_t)
-#define IOCTL_PA_FREE  _IOR('p', 1, void *)
-#define IOCTL_IO_READ  _IOR('p', 2, struct io_req)
-#define IOCTL_IO_WRITE _IOR('p', 3, struct io_req)
+#define IOCTL_PA_FREE _IOR('p', 1, void *)
+#define IOCTL_DMA_ALLOC _IOWR('p', 2, struct dma_info)
+#define IOCTL_DMA_FREE _IOR('p', 3, struct dma_info)
+#define IOCTL_IO_READ _IOR('p', 4, struct io_req)
+#define IOCTL_IO_WRITE _IOR('p', 5, struct io_req)
 
 #define IO_SIZE_BYTE  0
 #define IO_SIZE_WORD  1
 #define IO_SIZE_DWORD 2
-
-static dev_t  dev;
-static struct cdev c_dev;
-static struct class *cl;
 
 struct addr_list *al;
 static int pa_open_count = 0;
@@ -131,8 +142,10 @@ static long pa_ioctl(struct file *file,
         size_t size = 0;
         void *p, *k;
         int err;
-        int ret = 0;
-        struct io_req _io;
+        int ret = 0;        
+        struct dma_info _dma;
+        struct io_req   _io;
+
         mutex_lock(&pa_mutex);
 
         switch (ioctl_num) {
@@ -174,6 +187,7 @@ static long pa_ioctl(struct file *file,
                         break;
 
                 case IOCTL_PA_FREE:
+                        printk(KERN_INFO "IOCTL_PA_FREE\n");
 
                         err = copy_from_user(&p, (void *)ioctl_param, sizeof(p));
                         if (err) {
@@ -189,6 +203,35 @@ static long pa_ioctl(struct file *file,
 
                         }
                         break;
+
+                case IOCTL_DMA_ALLOC:
+                        printk(KERN_INFO "IOCTL_DMA_ALLOC");
+                        err = copy_from_user(&_dma, (void *)ioctl_param, sizeof(struct dma_info));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+                        printk(KERN_INFO "requested dma.size: %08x\n", _dma.size);
+                        _dma.kernel_vaddr = dma_alloc_coherent(dma_dev, _dma.size, &_dma.phys_address, GFP_KERNEL);
+                        printk(KERN_INFO "dma_alloc_coherent: va:[%016llx] - pa:[%016llx]", 
+                                (uint64_t)_dma.kernel_vaddr, (uint64_t)_dma.phys_address);
+                        if (copy_to_user((void *)ioctl_param, &_dma, sizeof(struct dma_info))) {
+                                pr_err("copy_to_user error!!\n");
+                        }
+
+                        break;
+
+                case IOCTL_DMA_FREE:
+                        printk(KERN_INFO "IOCTL_DMA_FREE");
+                        err = copy_from_user(&_dma, (void *)ioctl_param, sizeof(struct dma_info));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+                        dma_free_coherent(dma_dev, _dma.size, _dma.kernel_vaddr, _dma.phys_address);
+
+                        break;
+
                 case IOCTL_IO_READ:
                         printk(KERN_INFO "IOCTL_IO_READ");
                         err = copy_from_user(&_io, (void *)ioctl_param, sizeof(struct io_req));
@@ -202,12 +245,15 @@ static long pa_ioctl(struct file *file,
                         switch(_io.size) {
                                 case IO_SIZE_BYTE:
                                         _io.data = inb(_io.port);
+                                        wmb();
                                         break;
                                 case IO_SIZE_WORD:
                                         _io.data = inw(_io.port);
+                                        wmb();
                                         break;
                                 case IO_SIZE_DWORD:
                                         _io.data = inl(_io.port);
+                                        wmb();
                                         break;
                                 default:
                                         ret = -EINVAL;
@@ -231,12 +277,15 @@ static long pa_ioctl(struct file *file,
                         switch(_io.size) {
                                 case IO_SIZE_BYTE:
                                         outb((uint8_t) _io.data, _io.port);
+                                        wmb();
                                         break;
                                 case IO_SIZE_WORD:
                                         outw((uint16_t) _io.data, _io.port);
+                                        wmb();
                                         break;
                                 case IO_SIZE_DWORD:
                                         outl(_io.data, _io.port);
+                                        wmb();
                                         break;
                                 default:
                                         ret = -EINVAL;
@@ -248,6 +297,8 @@ static long pa_ioctl(struct file *file,
                 default:
                         ret = -EINVAL;
                         break;
+
+               
         }
 
 END:
@@ -255,7 +306,8 @@ END:
         return ret;
 }
 
-int device_mmap(struct file *filp, struct vm_area_struct *vma) {
+int device_mmap(struct file *filp, struct vm_area_struct *vma)
+{
     unsigned long offset = vma->vm_pgoff;
 
     if (offset >= __pa(high_memory) || (filp->f_flags & O_SYNC))
@@ -275,7 +327,9 @@ static struct file_operations fops = {
     .mmap = device_mmap,
 };
 
-int init_module(void) {
+int init_module(void)
+{
+
     al = NULL;
     mutex_init(&pa_mutex);
 
@@ -285,12 +339,40 @@ int init_module(void) {
     if ((cl = class_create(THIS_MODULE, DEVICE_NAME)) == NULL)
         goto class_create_fail;
 
-    if (device_create(cl, NULL, dev, NULL, DEVICE_NAME) == NULL)
+    device = device_create(cl, NULL, dev, NULL, DEVICE_NAME);
+    if (!device)
         goto device_create_fail;
 
     cdev_init(&c_dev, &fops);
     if (cdev_add(&c_dev, dev, 1) == -1)
         goto device_add_fail;
+
+    dma_dev = get_device(device);
+    if (!dma_dev) {
+        printk(KERN_ERR "Failed to get device\n");
+        goto device_add_fail;
+    }
+
+    if (dma_set_mask_and_coherent(dma_dev, DMA_BIT_MASK(dma_mask_bit))) {
+        printk(KERN_ERR "Failed to set DMA mask and coherent DMA mask\n");
+        goto device_add_fail;
+    }
+
+    if (dma_dev->dma_mask) {
+        *dma_dev->dma_mask = DMA_BIT_MASK(dma_mask_bit);
+        if (*dma_dev->dma_mask != DMA_BIT_MASK(dma_mask_bit)) {
+            printk(KERN_ERR "Failed to set DMA mask\n");
+            goto device_add_fail;
+        }
+    }
+    
+    if (dma_dev->coherent_dma_mask) {
+        dma_dev->coherent_dma_mask = DMA_BIT_MASK(dma_mask_bit);
+        if (dma_dev->coherent_dma_mask != DMA_BIT_MASK(dma_mask_bit)) {
+            printk(KERN_ERR "Failed to set coherent DMA mask\n");
+            goto device_add_fail;
+        }
+    }
 
     printk(KERN_INFO "Loaded physmem device");
         return 0;
@@ -305,7 +387,8 @@ int init_module(void) {
         return -1;
 }
 
-void cleanup_module(void) {
+void cleanup_module(void)
+{
     cdev_del(&c_dev);
     device_destroy(cl, dev);
     class_destroy(cl);
