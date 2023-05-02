@@ -11,13 +11,7 @@
 #include <linux/mutex.h>
 #include <linux/ioctl.h>
 
-#define DEVICE_NAME "physmem"
-#define IOCTL_PA_ALLOC _IOWR('p', 0, size_t)
-#define IOCTL_PA_FREE _IOR('p', 1, void *)
-
-static dev_t  dev;
-static struct cdev c_dev;
-static struct class *cl;
+#include <asm/io.h>
 
 struct addr_list {
         struct addr_list *next;
@@ -26,6 +20,27 @@ struct addr_list {
         void *k;
         size_t size;
 };
+
+struct io_req {
+        uint8_t  size;
+        uint16_t port;
+        uint32_t data;
+};
+
+#define DEVICE_NAME "physmem"
+
+#define IOCTL_PA_ALLOC _IOWR('p', 0, size_t)
+#define IOCTL_PA_FREE  _IOR('p', 1, void *)
+#define IOCTL_IO_READ  _IOR('p', 2, struct io_req)
+#define IOCTL_IO_WRITE _IOR('p', 3, struct io_req)
+
+#define IO_SIZE_BYTE  0
+#define IO_SIZE_WORD  1
+#define IO_SIZE_DWORD 2
+
+static dev_t  dev;
+static struct cdev c_dev;
+static struct class *cl;
 
 struct addr_list *al;
 static int pa_open_count = 0;
@@ -117,6 +132,7 @@ static long pa_ioctl(struct file *file,
         void *p, *k;
         int err;
         int ret = 0;
+        struct io_req _io;
         mutex_lock(&pa_mutex);
 
         switch (ioctl_num) {
@@ -173,6 +189,61 @@ static long pa_ioctl(struct file *file,
 
                         }
                         break;
+                case IOCTL_IO_READ:
+                        printk(KERN_INFO "IOCTL_IO_READ");
+                        err = copy_from_user(&_io, (void *)ioctl_param, sizeof(struct io_req));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+
+                        _io.data = 0;
+
+                        switch(_io.size) {
+                                case IO_SIZE_BYTE:
+                                        _io.data = inb(_io.port);
+                                        break;
+                                case IO_SIZE_WORD:
+                                        _io.data = inw(_io.port);
+                                        break;
+                                case IO_SIZE_DWORD:
+                                        _io.data = inl(_io.port);
+                                        break;
+                                default:
+                                        ret = -EINVAL;
+                                        goto END;
+                        }
+
+                        if (copy_to_user((void *)ioctl_param, &_io, sizeof(struct io_req))) {
+                                pr_err("copy_to_user error!!\n");
+                        }
+
+                        break;
+
+                case IOCTL_IO_WRITE:
+                        printk(KERN_INFO "IOCTL_IO_WRITE");
+                        err = copy_from_user(&_io, (void *)ioctl_param, sizeof(struct io_req));
+                        if (err) {
+                                ret = -EINVAL;
+                                goto END;
+                        }
+
+                        switch(_io.size) {
+                                case IO_SIZE_BYTE:
+                                        outb((uint8_t) _io.data, _io.port);
+                                        break;
+                                case IO_SIZE_WORD:
+                                        outw((uint16_t) _io.data, _io.port);
+                                        break;
+                                case IO_SIZE_DWORD:
+                                        outl(_io.data, _io.port);
+                                        break;
+                                default:
+                                        ret = -EINVAL;
+                                        goto END;
+                        }
+
+                        break;
 
                 default:
                         ret = -EINVAL;
@@ -184,8 +255,7 @@ END:
         return ret;
 }
 
-int device_mmap(struct file *filp, struct vm_area_struct *vma)
-{
+int device_mmap(struct file *filp, struct vm_area_struct *vma) {
     unsigned long offset = vma->vm_pgoff;
 
     if (offset >= __pa(high_memory) || (filp->f_flags & O_SYNC))
@@ -205,9 +275,7 @@ static struct file_operations fops = {
     .mmap = device_mmap,
 };
 
-int init_module(void)
-{
-
+int init_module(void) {
     al = NULL;
     mutex_init(&pa_mutex);
 
@@ -225,7 +293,7 @@ int init_module(void)
         goto device_add_fail;
 
     printk(KERN_INFO "Loaded physmem device");
-	return 0;
+        return 0;
 
     device_add_fail:
         device_destroy(cl, dev);
@@ -237,8 +305,7 @@ int init_module(void)
         return -1;
 }
 
-void cleanup_module(void)
-{
+void cleanup_module(void) {
     cdev_del(&c_dev);
     device_destroy(cl, dev);
     class_destroy(cl);
