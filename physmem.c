@@ -1,3 +1,4 @@
+#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mm.h>
@@ -259,8 +260,17 @@ int device_mmap(struct file *filp, struct vm_area_struct *vma) {
     unsigned long offset = vma->vm_pgoff;
 
     if (offset >= __pa(high_memory) || (filp->f_flags & O_SYNC))
-        vma->vm_flags |= VM_IO;
-    vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
+        #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0) // linux bc292ab00f6c
+                vma->vm_flags |= VM_IO;
+        #else
+                vm_flags_set(vma, VM_IO);
+        #endif
+
+    #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
+        vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
+    #else
+        vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+    #endif
 
     if (io_remap_pfn_range(vma, vma->vm_start, offset, 
         vma->vm_end-vma->vm_start, vma->vm_page_prot))
@@ -282,7 +292,11 @@ int init_module(void) {
     if (alloc_chrdev_region(&dev, 0, 1, DEVICE_NAME) < 0)
         goto fail;
 
-    if ((cl = class_create(THIS_MODULE, DEVICE_NAME)) == NULL)
+    #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0) // linux 1aaba11da9aa
+        if ((cl = class_create(THIS_MODULE, DEVICE_NAME)) == NULL)
+    #else
+        if ((cl = class_create(DEVICE_NAME)) == NULL)
+    #endif
         goto class_create_fail;
 
     if (device_create(cl, NULL, dev, NULL, DEVICE_NAME) == NULL)
