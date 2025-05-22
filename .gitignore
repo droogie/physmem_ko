@@ -1,0 +1,8 @@
+*.cmd
+*.ko
+*.mod
+*.mod.c
+*.order
+Module.symvers
+ioctl_test
+mmap_test
